@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -66,9 +67,17 @@ def main() -> None:
     source = source_path.read_text(encoding="utf-8", errors="replace")
 
     class_start = source.find("class HttpClient:")
-    class_end = source.find("\n\nclass GetClient:")
-    if class_start == -1 or class_end == -1 or class_end <= class_start:
+    if class_start == -1:
         raise SystemExit("Error: failed to locate HttpClient section in sync_get_to_notion.py")
+
+    # Replace until the next class definition. If none is found, replace to EOF.
+    next_class = re.search(r"\nclass\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source[class_start + 1 :])
+    if next_class:
+        class_end = class_start + 1 + next_class.start()
+    else:
+        class_end = len(source)
+    if class_end <= class_start:
+        raise SystemExit("Error: failed to compute HttpClient replacement range")
 
     patched = source[:class_start] + HTTP_CLIENT_PATCH + source[class_end:]
     namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(source_path)}
