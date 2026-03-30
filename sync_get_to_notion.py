@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -16,6 +17,8 @@ SHANGHAI_TZ = timezone(timedelta(hours=8))
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
 GET_API_BASE = "https://openapi.biji.com/open/api/v1"
+HTTP_TIMEOUT_SECONDS = 60
+HTTP_MAX_RETRIES = 8
 
 
 RECOMMENDED_FIELDS = {
@@ -323,11 +326,11 @@ def markdown_to_blocks(markdown: str) -> list[dict[str, Any]]:
     return blocks[:1000]
 
 
-def child_note_title(note: Any, index: int) -> str:
+def child_note_title(note: GetNote, index: int) -> str:
     return note.title or f"追加笔记 {index}"
 
 
-def build_child_toggle(note: Any, index: int) -> dict[str, Any]:
+def build_child_toggle(note: GetNote, index: int) -> dict[str, Any]:
     children: list[dict[str, Any]] = []
 
     note_body = clean_markdown(note.content)
@@ -346,7 +349,7 @@ def build_child_toggle(note: Any, index: int) -> dict[str, Any]:
     return toggle_block(child_note_title(note, index), children[:100])
 
 
-def build_page_blocks(note: Any) -> list[dict[str, Any]]:
+def build_page_blocks(note: GetNote) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = [heading_block(1, note.title)]
 
     if note.child_notes:
@@ -367,7 +370,7 @@ def build_page_blocks(note: Any) -> list[dict[str, Any]]:
     return blocks[:1000]
 
 
-def build_original_page_blocks(note: Any) -> list[dict[str, Any]]:
+def build_original_page_blocks(note: GetNote) -> list[dict[str, Any]]:
     if not note.original_text:
         return []
     blocks: list[dict[str, Any]] = [heading_block(1, "原文")]
@@ -467,20 +470,37 @@ class HttpClient:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        for attempt in range(5):
+        for attempt in range(HTTP_MAX_RETRIES):
             request = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
+                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
                     content = response.read()
                     if not content:
                         return {}
                     return json.loads(content.decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", "ignore")
-                if exc.code == 429 and attempt < 4:
-                    time.sleep(1.5 * (attempt + 1))
+                if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < HTTP_MAX_RETRIES - 1:
+                    wait_seconds = min(30.0, 1.5 * (attempt + 1))
+                    print(
+                        f"Transient HTTP {exc.code} from {url}; retrying in {wait_seconds:.1f}s "
+                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds)
                     continue
                 raise RuntimeError(f"{method} {url} failed: {exc.code} {error_body}") from exc
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+                if attempt < HTTP_MAX_RETRIES - 1:
+                    wait_seconds = min(30.0, 2.0 * (attempt + 1))
+                    print(
+                        f"Network timeout/error calling {url}: {exc}; retrying in {wait_seconds:.1f}s "
+                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                raise RuntimeError(f"{method} {url} failed after retries: {exc}") from exc
 
 
 class GetClient:
