@@ -515,10 +515,21 @@ class GetClient:
     def list_all_notes(self) -> list[GetNote]:
         notes: list[GetNote] = []
         cursor = 0
+        seen_cursors: set[int | str] = set()
+        page = 0
         while True:
+            if cursor in seen_cursors:
+                raise RuntimeError(f"Get notes pagination cursor repeated: {cursor}")
+            seen_cursors.add(cursor)
+            page += 1
             data = self.http.request("GET", "/resource/note/list", query={"since_id": cursor})
             payload = data.get("data", {})
-            notes.extend(GetNote.from_api(item) for item in payload.get("notes", []))
+            batch = [GetNote.from_api(item) for item in payload.get("notes", [])]
+            notes.extend(batch)
+            print(
+                f"Fetched Get page {page}: {len(batch)} notes, total {len(notes)}, "
+                f"has_more={bool(payload.get('has_more'))}, next_cursor={payload.get('next_cursor')}"
+            )
             if not payload.get("has_more"):
                 break
             cursor = payload.get("next_cursor")
@@ -629,9 +640,20 @@ class NotionClient:
     def list_existing_pages_by_get_id(self, database_id: str) -> dict[str, list[dict[str, Any]]]:
         existing: dict[str, list[dict[str, Any]]] = {}
         cursor = None
+        seen_cursors: set[str | None] = set()
+        page = 0
         while True:
+            if cursor in seen_cursors:
+                raise RuntimeError(f"Notion pagination cursor repeated: {cursor}")
+            seen_cursors.add(cursor)
+            page += 1
             response = self.query_database(database_id, cursor)
-            for item in response.get("results", []):
+            results = response.get("results", [])
+            print(
+                f"Fetched Notion page {page}: {len(results)} rows, "
+                f"has_more={bool(response.get('has_more'))}, next_cursor={response.get('next_cursor')}"
+            )
+            for item in results:
                 props = item.get("properties", {})
                 get_id = first_rich_text_plain_text(props.get("Get ID", {})).strip()
                 if get_id:
