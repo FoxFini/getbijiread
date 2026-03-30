@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import socket
@@ -25,6 +26,7 @@ HTTP_MAX_RETRIES = 8
 
 RECOMMENDED_FIELDS = {
     "Get ID": {"rich_text": {}},
+    "内容指纹": {"rich_text": {}},
     "元信息": {"rich_text": {}},
     "笔记链接": {"url": {}},
     "笔记类型": {"rich_text": {}},
@@ -76,6 +78,11 @@ def rich_text_array(text: str) -> list[dict[str, Any]]:
 
 def first_rich_text_plain_text(prop: dict[str, Any]) -> str:
     items = prop.get("rich_text", [])
+    return "".join(item.get("plain_text", "") for item in items)
+
+
+def first_title_plain_text(prop: dict[str, Any]) -> str:
+    items = prop.get("title", [])
     return "".join(item.get("plain_text", "") for item in items)
 
 
@@ -676,6 +683,91 @@ def note_sort_key(note: GetNote) -> tuple[str, str]:
     return (note.updated_at or note.created_at or "", note.note_id)
 
 
+def note_signature(note: GetNote) -> str:
+    payload = {
+        "note_id": note.note_id,
+        "title": note.title,
+        "content": note.content,
+        "ref_content": note.ref_content,
+        "note_type": note.note_type,
+        "source": note.source,
+        "tags": note.tags,
+        "topics": note.topics,
+        "is_child_note": note.is_child_note,
+        "children_count": note.children_count,
+        "children_ids": note.children_ids,
+        "parent_id": note.parent_id,
+        "links": note.links,
+        "original_text": note.original_text,
+        "created_at": note.created_at,
+        "updated_at": note.updated_at,
+        "child_signatures": [note_signature(child) for child in note.child_notes],
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def date_property_value(prop: dict[str, Any]) -> str | None:
+    date_value = prop.get("date")
+    if not date_value:
+        return None
+    return date_value.get("start")
+
+
+def normalize_iso_datetime(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=SHANGHAI_TZ)
+    return dt.astimezone(SHANGHAI_TZ).replace(microsecond=0).isoformat()
+
+
+def multi_select_names(prop: dict[str, Any]) -> set[str]:
+    return {item.get("name", "") for item in prop.get("multi_select", []) if item.get("name")}
+
+
+def page_matches_note(page: dict[str, Any], title_property_name: str, note: GetNote) -> bool:
+    props = page.get("properties", {})
+    note_link = note.links[0] if note.links else None
+    existing_signature = first_rich_text_plain_text(props.get("内容指纹", {})).strip()
+    current_signature = note_signature(note)
+    existing_updated_at = normalize_iso_datetime(date_property_value(props.get("更新时间", {})))
+    note_updated_at = normalize_iso_datetime(note.updated_at)
+
+    if first_rich_text_plain_text(props.get("Get ID", {})).strip() != note.note_id:
+        return False
+
+    if existing_signature:
+        return existing_signature == current_signature
+
+    # Prefer the source update timestamp for incremental sync decisions.
+    if note_updated_at and existing_updated_at:
+        return (
+            existing_updated_at == note_updated_at
+            and (props.get("笔记链接", {}) or {}).get("url") == note_link
+            and int((props.get("子笔记数", {}) or {}).get("number") or 0) == note.children_count
+        )
+
+    checks = [
+        first_title_plain_text(props.get(title_property_name, {})).strip() == note.title,
+        (props.get("笔记链接", {}) or {}).get("url") == note_link,
+        first_rich_text_plain_text(props.get("笔记类型", {})).strip() == note.note_type,
+        first_rich_text_plain_text(props.get("来源", {})).strip() == note.source,
+        multi_select_names(props.get("标签", {})) == set(note.tags),
+        multi_select_names(props.get("主题", {})) == set(note.topics),
+        normalize_iso_datetime(date_property_value(props.get("创建时间", {}))) == normalize_iso_datetime(note.created_at),
+        existing_updated_at == note_updated_at,
+        (props.get("是否子笔记", {}) or {}).get("checkbox") == note.is_child_note,
+        int((props.get("子笔记数", {}) or {}).get("number") or 0) == note.children_count,
+    ]
+    return all(checks)
+
+
 def choose_notes_for_sync(notes: list[GetNote]) -> list[GetNote]:
     deduped: dict[str, GetNote] = {}
     for note in notes:
@@ -702,6 +794,7 @@ def build_properties(title_property_name: str, note: GetNote) -> dict[str, Any]:
     return {
         title_property_name: {"title": rich_text_array(truncate_text(note.title, 1800))},
         "Get ID": {"rich_text": rich_text_array(note.note_id)},
+        "内容指纹": {"rich_text": rich_text_array(note_signature(note))},
         "元信息": {"rich_text": rich_text_array(note.metadata_text())},
         "笔记链接": {"url": note.links[0] if note.links else None},
         "笔记类型": {"rich_text": rich_text_array(note.note_type)},
@@ -769,11 +862,24 @@ def sync_notes() -> None:
     created = 0
     updated = 0
     deduped_pages = 0
+    skipped = 0
     for index, note in enumerate(notes, start=1):
         note = get_client.expand_note(note)
         existing = existing_pages.get(note.note_id, [])
 
-        if existing:
+        matching_page = next(
+            (page for page in existing if page_matches_note(page, title_property_name, note)),
+            None,
+        )
+
+        if matching_page:
+            duplicates = [page for page in existing if page["id"] != matching_page["id"]]
+            if duplicates:
+                deduped_pages += notion.archive_existing_pages(duplicates)
+                time.sleep(0.1)
+            skipped += 1
+            action = "skipped"
+        elif existing:
             deduped_pages += notion.archive_existing_pages(existing)
             time.sleep(0.2)
             create_main_note_page(notion, database_id, title_property_name, note)
@@ -791,6 +897,7 @@ def sync_notes() -> None:
     print("Sync complete.")
     print(f"Created: {created}")
     print(f"Updated: {updated}")
+    print(f"Skipped: {skipped}")
     print(f"Archived duplicates: {deduped_pages}")
     print("Recommended Notion fields:")
     for field_name in RECOMMENDED_FIELDS:
