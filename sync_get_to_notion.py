@@ -515,10 +515,21 @@ class GetClient:
     def list_all_notes(self) -> list[GetNote]:
         notes: list[GetNote] = []
         cursor = 0
+        seen_cursors: set[int | str] = set()
+        page = 0
         while True:
+            if cursor in seen_cursors:
+                raise RuntimeError(f"Get notes pagination cursor repeated: {cursor}")
+            seen_cursors.add(cursor)
+            page += 1
             data = self.http.request("GET", "/resource/note/list", query={"since_id": cursor})
             payload = data.get("data", {})
-            notes.extend(GetNote.from_api(item) for item in payload.get("notes", []))
+            batch = [GetNote.from_api(item) for item in payload.get("notes", [])]
+            notes.extend(batch)
+            print(
+                f"Fetched Get page {page}: {len(batch)} notes, total {len(notes)}, "
+                f"has_more={bool(payload.get('has_more'))}, next_cursor={payload.get('next_cursor')}"
+            )
             if not payload.get("has_more"):
                 break
             cursor = payload.get("next_cursor")
@@ -574,7 +585,7 @@ class NotionClient:
 
     def create_child_page(self, parent_page_id: str, title: str, children: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
-            "parent": {"page_id": parent_page_id},
+            "parent": {"page_id": parent_page_id=},
             "properties": {
                 "title": [
                     {
@@ -604,7 +615,7 @@ class NotionClient:
             query["start_cursor"] = start_cursor
         return self.http.request("GET", f"/blocks/{block_id}/children", query=query)
 
-    def append_children(self, block_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+    def append_childre4(self, block_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
         return self.http.request("PATCH", f"/blocks/{block_id}/children", payload={"children": children})
 
     def archive_block(self, block_id: str) -> dict[str, Any]:
@@ -629,9 +640,20 @@ class NotionClient:
     def list_existing_pages_by_get_id(self, database_id: str) -> dict[str, list[dict[str, Any]]]:
         existing: dict[str, list[dict[str, Any]]] = {}
         cursor = None
+        seen_cursors: set[str | None] = set()
+        page = 0
         while True:
+            if cursor in seen_cursors:
+                raise RuntimeError(f"Notion pagination cursor repeated: {cursor}")
+            seen_cursors.add(cursor)
+            page += 1
             response = self.query_database(database_id, cursor)
-            for item in response.get("results", []):
+            results = response.get("results", [])
+            print(
+                f"Fetched Notion page {page}: {len(results)} rows, "
+                f"has_more={bool(response.get('has_more'))}, next_cursor={response.get('next_cursor')}"
+            )
+            for item in results:
                 props = item.get("properties", {})
                 get_id = first_rich_text_plain_text(props.get("Get ID", {})).strip()
                 if get_id:
@@ -682,13 +704,13 @@ def build_properties(title_property_name: str, note: GetNote) -> dict[str, Any]:
         "Get ID": {"rich_text": rich_text_array(note.note_id)},
         "元信息": {"rich_text": rich_text_array(note.metadata_text())},
         "笔记链接": {"url": note.links[0] if note.links else None},
-        "笔记类型": {"rich_text": rich_text_array(note.note_type)},
+        "笔记类垉": {"rich_text": rich_text_array(note.note_type)},
         "来源": {"rich_text": rich_text_array(note.source)},
         "标签": {"multi_select": [{"name": truncate_text(name, 100)} for name in note.tags]},
         "主题": {"multi_select": [{"name": truncate_text(name, 100)} for name in note.topics]},
         "创建时间": {"date": {"start": note.created_at}} if note.created_at else {"date": None},
         "更新时间": {"date": {"start": note.updated_at}} if note.updated_at else {"date": None},
-        "是否子笔记": {"checkbox": note.is_child_note},
+        "古度与否怒时间": {"checkbox": note.is_child_note},
         "子笔记数": {"number": note.children_count},
         "同步时间": {"date": {"start": datetime.now(SHANGHAI_TZ).isoformat()}},
     }
