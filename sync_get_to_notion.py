@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -16,6 +17,8 @@ SHANGHAI_TZ = timezone(timedelta(hours=8))
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
 GET_API_BASE = "https://openapi.biji.com/open/api/v1"
+HTTP_TIMEOUT_SECONDS = 60
+HTTP_MAX_RETRIES = 8
 
 
 RECOMMENDED_FIELDS = {
@@ -467,20 +470,37 @@ class HttpClient:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        for attempt in range(5):
+        for attempt in range(HTTP_MAX_RETRIES):
             request = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
+                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
                     content = response.read()
                     if not content:
                         return {}
                     return json.loads(content.decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", "ignore")
-                if exc.code == 429 and attempt < 4:
-                    time.sleep(1.5 * (attempt + 1))
+                if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < HTTP_MAX_RETRIES - 1:
+                    wait_seconds = min(30.0, 1.5 * (attempt + 1))
+                    print(
+                        f"Transient HTTP {exc.code} from {url}; retrying in {wait_seconds:.1f}s "
+                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds)
                     continue
                 raise RuntimeError(f"{method} {url} failed: {exc.code} {error_body}") from exc
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+                if attempt < HTTP_MAX_RETRIES - 1:
+                    wait_seconds = min(30.0, 2.0 * (attempt + 1))
+                    print(
+                        f"Network timeout/error calling {url}: {exc}; retrying in {wait_seconds:.1f}s "
+                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                raise RuntimeError(f"{method} {url} failed after retries: {exc}") from exc
 
 
 class GetClient:
