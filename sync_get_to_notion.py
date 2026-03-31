@@ -556,12 +556,29 @@ class GetClient:
             return note
         seen.add(note.note_id)
 
-        detail = self.get_note_detail(note.note_id)
+        try:
+            detail = self.get_note_detail(note.note_id)
+        except Exception as exc:
+            # Keep the sync moving: fall back to list payload when detail API is unstable.
+            print(
+                f"Warning: failed to fetch note detail for {note.note_id}; "
+                f"falling back to list payload. error={exc}",
+                file=sys.stderr,
+            )
+            detail = note
         if detail.children_ids:
             child_notes: list[GetNote] = []
             for child_id in detail.children_ids:
-                child_note = self.expand_note(self.get_note_detail(child_id), seen)
-                child_notes.append(child_note)
+                try:
+                    child_detail = self.get_note_detail(child_id)
+                    child_note = self.expand_note(child_detail, seen)
+                    child_notes.append(child_note)
+                except Exception as exc:
+                    print(
+                        f"Warning: failed to fetch child note detail for {child_id}; "
+                        f"skipping this child. error={exc}",
+                        file=sys.stderr,
+                    )
             detail.child_notes = child_notes
         return detail
 
