@@ -76,6 +76,21 @@ $env:SYNC_LIMIT="5"
 python .\sync_get_to_notion.py
 ```
 
+### 3.1 时间与重试参数（可选）
+
+```powershell
+# 内容不变时是否也刷新“同步时间”（默认 1）
+$env:TOUCH_SYNC_TIME_ON_SKIP="1"
+
+# 笔记详情接口超时/重试（默认 20 秒、3 次）
+$env:GET_DETAIL_TIMEOUT_SECONDS="20"
+$env:GET_DETAIL_MAX_RETRIES="3"
+
+# 全局接口超时/重试（默认 60 秒、8 次）
+$env:HTTP_TIMEOUT_SECONDS="60"
+$env:HTTP_MAX_RETRIES="8"
+```
+
 ### 4. 同步后的页面结构
 
 主页面内容顺序是：
@@ -103,6 +118,8 @@ python .\sync_get_to_notion.py
 - `16:00`
 
 也支持在 GitHub Actions 页面手动触发。
+
+注意：GitHub 的 `schedule` 用 UTC 解释，并且会有队列延迟，实际触发时间可能晚几分钟到十几分钟。
 
 ### 2. GitHub 仓库需要配置的 Secrets
 

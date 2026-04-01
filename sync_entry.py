@@ -17,6 +17,8 @@ HTTP_CLIENT_PATCH = """class HttpClient:
         path: str,
         payload: dict[str, Any] | None = None,
         query: dict[str, Any] | None = None,
+        timeout_seconds: int | None = None,
+        max_retries: int | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         if query:
@@ -28,32 +30,35 @@ HTTP_CLIENT_PATCH = """class HttpClient:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        for attempt in range(HTTP_MAX_RETRIES):
+        effective_timeout = max(1, int(timeout_seconds or HTTP_TIMEOUT_SECONDS))
+        effective_retries = max(1, int(max_retries or HTTP_MAX_RETRIES))
+
+        for attempt in range(effective_retries):
             request = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                with urllib.request.urlopen(request, timeout=effective_timeout) as response:
                     content = response.read()
                     if not content:
                         return {}
                     return json.loads(content.decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", "ignore")
-                if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < HTTP_MAX_RETRIES - 1:
+                if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < effective_retries - 1:
                     wait_seconds = min(30.0, 1.5 * (attempt + 1))
                     print(
                         f"Transient HTTP {exc.code} from {url}; retrying in {wait_seconds:.1f}s "
-                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        f"({attempt + 1}/{effective_retries})...",
                         file=sys.stderr,
                     )
                     time.sleep(wait_seconds)
                     continue
                 raise RuntimeError(f"{method} {url} failed: {exc.code} {error_body}") from exc
             except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-                if attempt < HTTP_MAX_RETRIES - 1:
+                if attempt < effective_retries - 1:
                     wait_seconds = min(30.0, 2.0 * (attempt + 1))
                     print(
                         f"Network timeout/error calling {url}: {exc}; retrying in {wait_seconds:.1f}s "
-                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        f"({attempt + 1}/{effective_retries})...",
                         file=sys.stderr,
                     )
                     time.sleep(wait_seconds)

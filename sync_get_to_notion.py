@@ -21,8 +21,23 @@ SHANGHAI_TZ = timezone(timedelta(hours=8))
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
 GET_API_BASE = "https://openapi.biji.com/open/api/v1"
-HTTP_TIMEOUT_SECONDS = 60
-HTTP_MAX_RETRIES = 8
+
+
+def read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+HTTP_TIMEOUT_SECONDS = read_int_env("HTTP_TIMEOUT_SECONDS", 60)
+HTTP_MAX_RETRIES = read_int_env("HTTP_MAX_RETRIES", 8)
+GET_DETAIL_TIMEOUT_SECONDS = read_int_env("GET_DETAIL_TIMEOUT_SECONDS", 20)
+GET_DETAIL_MAX_RETRIES = read_int_env("GET_DETAIL_MAX_RETRIES", 3)
 
 
 RECOMMENDED_FIELDS = {
@@ -469,6 +484,8 @@ class HttpClient:
         path: str,
         payload: dict[str, Any] | None = None,
         query: dict[str, Any] | None = None,
+        timeout_seconds: int | None = None,
+        max_retries: int | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         if query:
@@ -480,32 +497,35 @@ class HttpClient:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        for attempt in range(HTTP_MAX_RETRIES):
+        effective_timeout = max(1, int(timeout_seconds or HTTP_TIMEOUT_SECONDS))
+        effective_retries = max(1, int(max_retries or HTTP_MAX_RETRIES))
+
+        for attempt in range(effective_retries):
             request = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                with urllib.request.urlopen(request, timeout=effective_timeout) as response:
                     content = response.read()
                     if not content:
                         return {}
                     return json.loads(content.decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", "ignore")
-                if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < HTTP_MAX_RETRIES - 1:
+                if exc.code in {408, 409, 429, 500, 502, 503, 504} and attempt < effective_retries - 1:
                     wait_seconds = min(30.0, 1.5 * (attempt + 1))
                     print(
                         f"Transient HTTP {exc.code} from {url}; retrying in {wait_seconds:.1f}s "
-                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        f"({attempt + 1}/{effective_retries})...",
                         file=sys.stderr,
                     )
                     time.sleep(wait_seconds)
                     continue
                 raise RuntimeError(f"{method} {url} failed: {exc.code} {error_body}") from exc
             except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-                if attempt < HTTP_MAX_RETRIES - 1:
+                if attempt < effective_retries - 1:
                     wait_seconds = min(30.0, 2.0 * (attempt + 1))
                     print(
                         f"Network timeout/error calling {url}: {exc}; retrying in {wait_seconds:.1f}s "
-                        f"({attempt + 1}/{HTTP_MAX_RETRIES})...",
+                        f"({attempt + 1}/{effective_retries})...",
                         file=sys.stderr,
                     )
                     time.sleep(wait_seconds)
@@ -547,7 +567,13 @@ class GetClient:
         return notes
 
     def get_note_detail(self, note_id: str) -> GetNote:
-        data = self.http.request("GET", "/resource/note/detail", query={"id": note_id})
+        data = self.http.request(
+            "GET",
+            "/resource/note/detail",
+            query={"id": note_id},
+            timeout_seconds=GET_DETAIL_TIMEOUT_SECONDS,
+            max_retries=GET_DETAIL_MAX_RETRIES,
+        )
         return GetNote.from_api(data.get("data", {}).get("note", {}))
 
     def expand_note(self, note: GetNote, seen: set[str] | None = None) -> GetNote:
@@ -745,6 +771,10 @@ def normalize_iso_datetime(value: str | None) -> str | None:
     return dt.astimezone(SHANGHAI_TZ).replace(microsecond=0).isoformat()
 
 
+def now_shanghai_iso() -> str:
+    return datetime.now(SHANGHAI_TZ).replace(microsecond=0).isoformat()
+
+
 def multi_select_names(prop: dict[str, Any]) -> set[str]:
     return {item.get("name", "") for item in prop.get("multi_select", []) if item.get("name")}
 
@@ -808,7 +838,7 @@ def choose_notes_for_sync(notes: list[GetNote]) -> list[GetNote]:
         return ordered[:sync_limit]
     return ordered
 
-def build_properties(title_property_name: str, note: GetNote) -> dict[str, Any]:
+def build_properties(title_property_name: str, note: GetNote, sync_time_iso: str) -> dict[str, Any]:
     return {
         title_property_name: {"title": rich_text_array(truncate_text(note.title, 1800))},
         "Get ID": {"rich_text": rich_text_array(note.note_id)},
@@ -823,7 +853,7 @@ def build_properties(title_property_name: str, note: GetNote) -> dict[str, Any]:
         "更新时间": {"date": {"start": note.updated_at}} if note.updated_at else {"date": None},
         "是否子笔记": {"checkbox": note.is_child_note},
         "子笔记数": {"number": note.children_count},
-        "同步时间": {"date": {"start": datetime.now(SHANGHAI_TZ).isoformat()}},
+        "同步时间": {"date": {"start": sync_time_iso}},
     }
 
 
@@ -832,8 +862,9 @@ def create_main_note_page(
     database_id: str,
     title_property_name: str,
     note: GetNote,
+    sync_time_iso: str,
 ) -> dict[str, Any]:
-    properties = build_properties(title_property_name, note)
+    properties = build_properties(title_property_name, note, sync_time_iso)
     blocks = build_page_blocks(note)
     page = notion.create_page(
         {
@@ -881,6 +912,13 @@ def sync_notes() -> None:
     updated = 0
     deduped_pages = 0
     skipped = 0
+    run_sync_time = now_shanghai_iso()
+    touch_sync_time_on_skip = os.getenv("TOUCH_SYNC_TIME_ON_SKIP", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
     for index, note in enumerate(notes, start=1):
         note = get_client.expand_note(note)
         existing = existing_pages.get(note.note_id, [])
@@ -895,16 +933,22 @@ def sync_notes() -> None:
             if duplicates:
                 deduped_pages += notion.archive_existing_pages(duplicates)
                 time.sleep(0.1)
+            if touch_sync_time_on_skip:
+                notion.update_page(
+                    matching_page["id"],
+                    {"properties": build_properties(title_property_name, note, run_sync_time)},
+                )
+                time.sleep(0.05)
             skipped += 1
             action = "skipped"
         elif existing:
             deduped_pages += notion.archive_existing_pages(existing)
             time.sleep(0.2)
-            create_main_note_page(notion, database_id, title_property_name, note)
+            create_main_note_page(notion, database_id, title_property_name, note, run_sync_time)
             updated += 1
             action = "recreated"
         else:
-            create_main_note_page(notion, database_id, title_property_name, note)
+            create_main_note_page(notion, database_id, title_property_name, note, run_sync_time)
             created += 1
             action = "created"
 
