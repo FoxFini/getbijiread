@@ -3,7 +3,7 @@ name: Sync Get Notes To Notion
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */4 * * *"
+    - cron: "17 */4 * * *"
 
 jobs:
   sync:
@@ -25,3 +25,9 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: python -X utf8 ./sync_entry.py
+
+      - name: Keep repository alive
+        uses: gautamkrishnar/keepalive-workflow@v2
+        with:
+          commit_message: "chore: keepalive [skip ci]"
+          time_elapsed: 50
