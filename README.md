@@ -9,7 +9,7 @@
 - 同步笔记链接到独立字段 `笔记链接`
 - 把追加笔记放进正文的折叠块
 - 把原文单独创建成主页面顶部的子页面 `原文`
-- 每天北京时间 `08:00` 和 `16:00` 支持 GitHub Actions 定时去重同步
+- 支持 GitHub Actions 每 4 小时定时去重同步
 
 ## Notion 字段
 
@@ -113,13 +113,21 @@ $env:HTTP_MAX_RETRIES="8"
 
 - [sync.yml](F:\Codex Projects\Study Project\Getbijitongbu\.github\workflows\sync.yml)
 
-它会在北京时间每天这两个时间自动执行去重同步：
+建议先手动运行第一次，之后 GitHub Actions 会按每 4 小时一次自动执行去重同步。
+
+当前对应北京时间的触发时间是：
+- `00:00`
+- `04:00`
 - `08:00`
+- `12:00`
 - `16:00`
+- `20:00`
 
 也支持在 GitHub Actions 页面手动触发。
 
-注意：GitHub 的 `schedule` 用 UTC 解释，并且会有队列延迟，实际触发时间可能晚几分钟到十几分钟。
+注意：GitHub 的 `schedule` 只能按固定 cron 时间触发，不能做到“严格从第一次运行开始每隔 4 小时”。
+当前实现是先支持手动运行第一次，之后再按固定 4 小时周期触发。
+另外 GitHub 的 `schedule` 用 UTC 解释，并且会有队列延迟，实际触发时间可能晚几分钟到十几分钟。
 
 ### 2. GitHub 仓库需要配置的 Secrets
 
