@@ -21,6 +21,7 @@ SHANGHAI_TZ = timezone(timedelta(hours=8))
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
 GET_API_BASE = "https://openapi.biji.com/open/api/v1"
+RENDER_LAYOUT_VERSION = 2
 
 
 def read_int_env(name: str, default: int) -> int:
@@ -729,6 +730,7 @@ def note_sort_key(note: GetNote) -> tuple[str, str]:
 
 def note_signature(note: GetNote) -> str:
     payload = {
+        "render_layout_version": RENDER_LAYOUT_VERSION,
         "note_id": note.note_id,
         "title": note.title,
         "content": note.content,
