@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "17 */4 * * *"
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -27,7 +30,19 @@ jobs:
         run: python -X utf8 ./sync_entry.py
 
       - name: Keep repository alive
-        uses: gautamkrishnar/keepalive-workflow@v2
-        with:
-          commit_message: "chore: keepalive [skip ci]"
-          time_elapsed: 50
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          last_commit_ts="$(git log -1 --format=%ct)"
+          now_ts="$(date +%s)"
+          age_days="$(((now_ts - last_commit_ts) / 86400))"
+
+          if [ "$age_days" -lt 45 ]; then
+            echo "Repository activity is recent ($age_days days); skipping keepalive commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive [skip ci]"
+          git push
