@@ -375,7 +375,7 @@ def build_child_toggle(note: GetNote, index: int) -> dict[str, Any]:
 
 
 def build_page_blocks(note: GetNote) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = [heading_block(1, note.title)]
+    blocks: list[dict[str, Any]] = []
 
     if note.child_notes:
         blocks.append(heading_block(2, "追加笔记"))
