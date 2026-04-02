@@ -1,0 +1,10 @@
+{
+  "id": "get-note-sync",
+  "name": "Get Note Sync",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Sync Get notes to Obsidian via the Get OpenAPI.",
+  "author": "FoxFini",
+  "authorUrl": "https://github.com/FoxFini",
+  "isDesktopOnly": false
+}

@@ -1,0 +1,15 @@
+.get-note-sync-status {
+  color: var(--text-muted);
+}
+
+.get-note-sync-summary {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  margin-top: 16px;
+  padding: 12px 14px;
+}
+
+.get-note-sync-summary p {
+  margin: 6px 0;
+}

@@ -1,3 +1,8 @@
+node_modules/
+.obsidian/
+.DS_Store
+*.log
+*.tsbuildinfo
+coverage/
+dist/
 __pycache__/
-*.pyc
-.env
